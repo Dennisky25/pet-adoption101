@@ -20,6 +20,87 @@ import {
 
 import { v4 as uuidv4 } from "uuid";
 
+// Utility functions for input validation
+function isValidEmail(email: string): boolean {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+}
+
+function isValidPhoneNumber(phoneNumber: string): boolean {
+  // Simple phone validation; adjust regex as needed for specific formats
+  const phoneRegex = /^[0-9]{10,15}$/;
+  return phoneRegex.test(phoneNumber);
+}
+
+function validateUserPayload(payload: any): boolean {
+  const { name, phoneNumber, email, address } = payload;
+  return (
+    typeof name === "string" &&
+    name.trim().length > 0 &&
+    typeof phoneNumber === "string" &&
+    isValidPhoneNumber(phoneNumber) &&
+    typeof email === "string" &&
+    isValidEmail(email) &&
+    typeof address === "string" &&
+    address.trim().length > 0
+  );
+}
+
+function validatePetPayload(payload: any): boolean {
+  const { name, species, breed, gender, age, petImage, description, healthStatus, shelterId } = payload;
+  return (
+    typeof name === "string" &&
+    name.trim().length > 0 &&
+    typeof species === "string" &&
+    species.trim().length > 0 &&
+    typeof breed === "string" &&
+    breed.trim().length > 0 &&
+    typeof gender === "string" &&
+    gender.trim().length > 0 &&
+    typeof age === "string" &&
+    age.trim().length > 0 &&
+    typeof petImage === "string" &&
+    petImage.trim().length > 0 &&
+    typeof description === "string" &&
+    description.trim().length > 0 &&
+    typeof healthStatus === "string" &&
+    healthStatus.trim().length > 0 &&
+    typeof shelterId === "string" &&
+    shelterId.trim().length > 0
+  );
+}
+
+function validateShelterPayload(payload: any): boolean {
+  const { name, location, phoneNumber, email } = payload;
+  return (
+    typeof name === "string" &&
+    name.trim().length > 0 &&
+    typeof location === "string" &&
+    location.trim().length > 0 &&
+    typeof phoneNumber === "string" &&
+    isValidPhoneNumber(phoneNumber) &&
+    typeof email === "string" &&
+    isValidEmail(email)
+  );
+}
+
+function validateAdoptionPayload(payload: any): boolean {
+  const { petId, userId, userPhoneNumber, address, reasonForAdoption } = payload;
+  return (
+    typeof petId === "string" &&
+    petId.trim().length > 0 &&
+    typeof userId === "string" &&
+    userId.trim().length > 0 &&
+    typeof userPhoneNumber === "string" &&
+    isValidPhoneNumber(userPhoneNumber) &&
+    typeof address === "string" &&
+    address.trim().length > 0 &&
+    typeof reasonForAdoption === "string" &&
+    reasonForAdoption.trim().length > 0
+  );
+}
+
+// Records and Payload Definitions
 const User = Record({
   id: text,
   principal: Principal,
@@ -68,7 +149,7 @@ const PetImage = Record({
   petImage: text,
 });
 
-const updatePetPayload = Record({
+const UpdatePetPayload = Record({
   petId: text,
   healthStatus: text,
   age: text,
@@ -91,7 +172,7 @@ const ShelterPayload = Record({
   email: text,
 });
 
-const updateShelterPayload = Record({
+const UpdateShelterPayload = Record({
   id: text,
   phoneNumber: text,
   email: text,
@@ -128,7 +209,7 @@ const AdoptionRecords = Record({
   status: text,
 });
 
-const updateAdoption = Record({
+const UpdateAdoption = Record({
   adoptionId: text,
   userName: text,
   userPhoneNumber: text,
@@ -139,18 +220,24 @@ const updateAdoption = Record({
 const Error = Variant({
   NotFound: text,
   InvalidPayload: text,
+  ValidationError: text,
 });
 
+// Storage Definitions
 const UsersStorage = StableBTreeMap(0, text, User);
 const PetsStorage = StableBTreeMap(1, text, Pet);
 const SheltersStorage = StableBTreeMap(2, text, Shelter);
 const AdoptionsStorage = StableBTreeMap(3, text, AdoptionRecords);
 
+// Canister Definition
 export default Canister({
+  // User Operations
+
   addUser: update([UserPayload], Result(User, Error), (payload) => {
-    if (typeof payload !== "object" || Object.keys(payload).length === 0) {
-      return Err({ NotFound: "invalid payoad" });
+    if (!validateUserPayload(payload)) {
+      return Err({ ValidationError: "Invalid user payload. Please check all fields." });
     }
+
     const userId = uuidv4();
     const user = {
       id: userId,
@@ -171,21 +258,28 @@ export default Canister({
   }),
 
   getUserOwner: query([], Result(User, Error), () => {
-    const userOpt = UsersStorage.values().filter((user) => {
+    const users = UsersStorage.values().filter((user) => {
       return user.principal.toText() === ic.caller().toText();
     });
-    if (userOpt.length === 0) {
-      return Err({
-        NotFound: `User with principal=${ic.caller()} not found`,
-      });
+    if (users.length === 0) {
+      return Err({ NotFound: `User with principal=${ic.caller()} not found` });
     }
-    return Ok(userOpt[0]);
+    return Ok(users[0]);
   }),
 
+  // Pet Operations
+
   addPet: update([PetPayload], Result(Pet, Error), (payload) => {
-    if (typeof payload !== "object" || Object.keys(payload).length === 0) {
-      return Err({ NotFound: "invalid payoad" });
+    if (!validatePetPayload(payload)) {
+      return Err({ ValidationError: "Invalid pet payload. Please check all fields." });
     }
+
+    // Check if shelter exists
+    const shelterOpt = SheltersStorage.get(payload.shelterId);
+    if ("None" in shelterOpt) {
+      return Err({ NotFound: `Shelter with ID ${payload.shelterId} not found.` });
+    }
+
     const petId = uuidv4();
     const pet = {
       id: petId,
@@ -193,14 +287,24 @@ export default Canister({
       ...payload,
     };
     PetsStorage.insert(petId, pet);
+
+    // Update shelter's pet list
+    const shelter = shelterOpt.Some;
+    shelter.pets.push(petId);
+    SheltersStorage.insert(shelter.id, shelter);
+
     return Ok(pet);
   }),
 
   addPetImage: update([PetImage], Result(PetImage, Error), (payload) => {
-    if (typeof payload !== "object" || Object.keys(payload).length === 0) {
-      return Err({ NotFound: "invalid payoad" });
+    const petOpt = PetsStorage.get(payload.petId);
+    if ("None" in petOpt) {
+      return Err({ NotFound: `Pet with ID ${payload.petId} not found.` });
     }
-    PetsStorage.insert(payload.petId, payload);
+
+    const pet = petOpt.Some;
+    pet.petImage = payload.petImage;
+    PetsStorage.insert(pet.id, pet);
     return Ok(payload);
   }),
 
@@ -216,12 +320,24 @@ export default Canister({
     return PetsStorage.values().filter((pet) => pet.status === "notAdopted");
   }),
 
-  updatePetInfo: update([updatePetPayload], Result(Pet, Error), (payload) => {
+  updatePetInfo: update([UpdatePetPayload], Result(Pet, Error), (payload) => {
     const petOpt = PetsStorage.get(payload.petId);
-    if (petOpt === null) {
-      return Err({ NotFound: "Pet not found" });
+    if ("None" in petOpt) {
+      return Err({ NotFound: "Pet not found." });
     }
+
     const pet = petOpt.Some;
+
+    // Validate updated fields
+    const updatedPayload = {
+      ...pet,
+      ...payload,
+    };
+
+    if (!validatePetPayload(updatedPayload)) {
+      return Err({ ValidationError: "Invalid pet payload. Please check all fields." });
+    }
+
     const updatedPet = {
       ...pet,
       ...payload,
@@ -230,10 +346,13 @@ export default Canister({
     return Ok(updatedPet);
   }),
 
+  // Shelter Operations
+
   createShelter: update([ShelterPayload], Result(Shelter, Error), (payload) => {
-    if (typeof payload !== "object" || Object.keys(payload).length === 0) {
-      return Err({ NotFound: "invalid payoad" });
+    if (!validateShelterPayload(payload)) {
+      return Err({ ValidationError: "Invalid shelter payload. Please check all fields." });
     }
+
     const shelterId = uuidv4();
     const shelter = {
       id: shelterId,
@@ -254,90 +373,102 @@ export default Canister({
   }),
 
   getShelterOwner: query([], Result(Shelter, Error), () => {
-    const shelterOpt = SheltersStorage.values().filter((shelter) => {
+    const shelters = SheltersStorage.values().filter((shelter) => {
       return shelter.principal.toText() === ic.caller().toText();
     });
-    if (shelterOpt.length === 0) {
-      return Err({
-        NotFound: `Shelter with principal=${ic.caller()} not found`,
-      });
+    if (shelters.length === 0) {
+      return Err({ NotFound: `Shelter with principal=${ic.caller()} not found` });
     }
-    return Ok(shelterOpt[0]);
+    return Ok(shelters[0]);
   }),
 
-  updateShelterInfo: update(
-    [updateShelterPayload],
-    Result(Shelter, Error),
-    (payload) => {
-      const shelterOpt = SheltersStorage.get(payload.id);
-      if (shelterOpt === null) {
-        return Err({ NotFound: "Shelter not found" });
-      }
-      const shelter = shelterOpt.Some;
-      const updatedShelter = {
-        ...shelter,
-        ...payload,
-      };
-      SheltersStorage.insert(shelter.id, updatedShelter);
-      return Ok(updatedShelter);
+  updateShelterInfo: update([UpdateShelterPayload], Result(Shelter, Error), (payload) => {
+    const shelterOpt = SheltersStorage.get(payload.id);
+    if ("None" in shelterOpt) {
+      return Err({ NotFound: "Shelter not found." });
     }
-  ),
+
+    const shelter = shelterOpt.Some;
+
+    // Validate updated fields
+    const updatedPayload = {
+      ...shelter,
+      ...payload,
+    };
+
+    if (!validateShelterPayload(updatedPayload)) {
+      return Err({ ValidationError: "Invalid shelter payload. Please check all fields." });
+    }
+
+    const updatedShelter = {
+      ...shelter,
+      ...payload,
+    };
+    SheltersStorage.insert(shelter.id, updatedShelter);
+    return Ok(updatedShelter);
+  }),
 
   searchPetsBySpecies: query([text], Vec(Pet), (species) => {
     return PetsStorage.values().filter((pet) => {
-      return pet.species.toLowerCase() === species.toLocaleLowerCase();
+      return pet.species.toLowerCase() === species.toLowerCase();
     });
   }),
 
-  fileForAdoption: update(
-    [AdoptionPayload],
-    Result(AdoptionRecords, Error),
-    (payload) => {
-      const userOpt = UsersStorage.get(payload.userId);
-      if ("None" in userOpt) {
-        return Err({
-          NotFound: `user with ID ${payload.userId} not found`,
-        });
-      }
-      const petOpt = PetsStorage.get(payload.petId);
-      if ("None" in petOpt) {
-        return Err({
-          NotFound: `pet with ID ${payload.petId} not found`,
-        });
-      }
+  // Adoption Operations
 
-      const user = userOpt.Some;
-      const pet = petOpt.Some;
-
-      const adoption = {
-        id: uuidv4(),
-        userId: user.id,
-        petId: pet.id,
-        userPhoneNumber: user.phoneNumber,
-        address: user.address,
-        status: "pending",
-        reasonForAdoption: payload.reasonForAdoption,
-      };
-
-      const records = {
-        adoptionId: adoption.id,
-        userId: adoption.userId,
-        petId: adoption.petId,
-        userPhoneNumber: adoption.userPhoneNumber,
-        address: adoption.address,
-        reasonForAdoption: adoption.reasonForAdoption,
-        dateOfAdoption: new Date().toISOString(),
-        userName: user.name,
-        petName: pet.name,
-        status: "peding",
-      };
-
-      user.application.push(records.adoptionId);
-      AdoptionsStorage.insert(records.adoptionId, records);
-
-      return Ok(records);
+  fileForAdoption: update([AdoptionPayload], Result(AdoptionRecords, Error), (payload) => {
+    if (!validateAdoptionPayload(payload)) {
+      return Err({ ValidationError: "Invalid adoption payload. Please check all fields." });
     }
-  ),
+
+    const userOpt = UsersStorage.get(payload.userId);
+    if ("None" in userOpt) {
+      return Err({ NotFound: `User with ID ${payload.userId} not found.` });
+    }
+
+    const petOpt = PetsStorage.get(payload.petId);
+    if ("None" in petOpt) {
+      return Err({ NotFound: `Pet with ID ${payload.petId} not found.` });
+    }
+
+    const user = userOpt.Some;
+    const pet = petOpt.Some;
+
+    // Check if pet is already adopted or pending
+    if (pet.status !== "notAdopted") {
+      return Err({ InvalidPayload: "Pet is not available for adoption." });
+    }
+
+    const adoptionId = uuidv4();
+    const adoption = {
+      id: adoptionId,
+      petId: pet.id,
+      userId: user.id,
+      userPhoneNumber: user.phoneNumber,
+      address: user.address,
+      reasonForAdoption: payload.reasonForAdoption,
+      //status: "pending",
+    };
+
+    const records = {
+      adoptionId: adoption.id,
+      userId: adoption.userId,
+      petId: adoption.petId,
+      petName: pet.name,
+      userName: user.name,
+      userPhoneNumber: adoption.userPhoneNumber,
+      address: adoption.address,
+      reasonForAdoption: adoption.reasonForAdoption,
+      dateOfAdoption: new Date().toISOString(),
+      status: "pending",
+    };
+
+    user.application.push(records.adoptionId);
+    UsersStorage.insert(user.id, user);
+    AdoptionsStorage.insert(records.adoptionId, records);
+
+    return Ok(records);
+  }),
 
   getAdoptionRecords: query([], Vec(AdoptionRecords), () => {
     return AdoptionsStorage.values();
@@ -347,70 +478,99 @@ export default Canister({
     return AdoptionsStorage.get(id);
   }),
 
-  updateAdoptionRecord: update(
-    [updateAdoption],
-    Result(AdoptionRecords, Error),
-    (payload) => {
-      const adoptionOpt = AdoptionsStorage.get(payload.adoptionId);
-      if (adoptionOpt === null) {
-        return Err({ NotFound: "Adoption not found" });
-      }
-      const adoption = adoptionOpt.Some;
-      const updatedAdoption = {
-        ...adoption,
-        ...payload,
-      };
-      AdoptionsStorage.insert(adoption.id, updatedAdoption);
-      return Ok(updatedAdoption);
+  updateAdoptionRecord: update([UpdateAdoption], Result(AdoptionRecords, Error), (payload) => {
+    const adoptionOpt = AdoptionsStorage.get(payload.adoptionId);
+    if ("None" in adoptionOpt) {
+      return Err({ NotFound: "Adoption record not found." });
     }
-  ),
 
-  completeAdoption: update(
-    [text],
-    Result(AdoptionRecords, Error),
-    (adoptionId) => {
-      const adoptionOpt = AdoptionsStorage.get(adoptionId);
-      if (adoptionOpt === null) {
-        return Err({ NotFound: "Adoption not found" });
-      }
-      const adoption = adoptionOpt.Some;
-      const updatedAdoption = {
-        ...adoption,
-        status: "completed",
-      };
+    const adoption = adoptionOpt.Some;
 
-      const petOpt = PetsStorage.get(adoption.petId);
-      if (petOpt === null) {
-        return Err({ NotFound: "Pet not found" });
-      }
-      const pet = petOpt.Some;
-      const updatedPet = {
-        ...pet,
-        status: "adopted",
-      };
-
-      PetsStorage.insert(adoption.petId, updatedPet);
-
-      AdoptionsStorage.insert(adoptionId, updatedAdoption);
-      return Ok(updatedAdoption);
+    // Validate updated fields if necessary
+    // For simplicity, assuming all fields are strings and non-empty
+    const { userName, userPhoneNumber, address, reasonForAdoption } = payload;
+    if (
+      typeof userName !== "string" ||
+      userName.trim().length === 0 ||
+      typeof userPhoneNumber !== "string" ||
+      !isValidPhoneNumber(userPhoneNumber) ||
+      typeof address !== "string" ||
+      address.trim().length === 0 ||
+      typeof reasonForAdoption !== "string" ||
+      reasonForAdoption.trim().length === 0
+    ) {
+      return Err({ ValidationError: "Invalid adoption update payload." });
     }
-  ),
+
+    const updatedAdoption = {
+      ...adoption,
+      userName,
+      userPhoneNumber,
+      address,
+      reasonForAdoption,
+    };
+
+    AdoptionsStorage.insert(adoption.id, updatedAdoption);
+    return Ok(updatedAdoption);
+  }),
+
+  completeAdoption: update([text], Result(AdoptionRecords, Error), (adoptionId) => {
+    const adoptionOpt = AdoptionsStorage.get(adoptionId);
+    if ("None" in adoptionOpt) {
+      return Err({ NotFound: "Adoption record not found." });
+    }
+
+    const adoption = adoptionOpt.Some;
+
+    if (adoption.status !== "pending") {
+      return Err({ InvalidPayload: "Only pending adoptions can be completed." });
+    }
+
+    const petOpt = PetsStorage.get(adoption.petId);
+    if ("None" in petOpt) {
+      return Err({ NotFound: "Associated pet not found." });
+    }
+
+    const pet = petOpt.Some;
+
+    const updatedPet = {
+      ...pet,
+      status: "adopted",
+    };
+    PetsStorage.insert(pet.id, updatedPet);
+
+    const updatedAdoption = {
+      ...adoption,
+      status: "completed",
+    };
+    AdoptionsStorage.insert(adoptionId, updatedAdoption);
+
+    return Ok(updatedAdoption);
+  }),
 
   failAdoption: update([text], Result(AdoptionRecords, Error), (adoptionId) => {
     const adoptionOpt = AdoptionsStorage.get(adoptionId);
-    if (adoptionOpt === null) {
-      return Err({ NotFound: "Adoption not found" });
+    if ("None" in adoptionOpt) {
+      return Err({ NotFound: "Adoption record not found." });
     }
+
     const adoption = adoptionOpt.Some;
+
+    if (adoption.status !== "pending") {
+      return Err({ InvalidPayload: "Only pending adoptions can be failed." });
+    }
+
     const updatedAdoption = {
       ...adoption,
       status: "failed",
     };
-
     AdoptionsStorage.insert(adoptionId, updatedAdoption);
+
     return Ok(updatedAdoption);
   }),
 });
+
+// Mocking crypto for environments where it's not available
 globalThis.crypto = {
   // @ts-ignore
   getRandomValues: () => {
